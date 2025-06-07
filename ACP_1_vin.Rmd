@@ -1,0 +1,686 @@
+---
+title: "Projet Analyse de données"
+author: "Olivier Berthier"
+date: "2024-08-21"
+output: html_document
+---
+
+
+L'objet de ce rapport consiste à étudier un jeu de données concernant les caractéristiques chimiques de différents vins, auxquels sont associés une note de qualité.
+```{r include=FALSE, results='hide'}
+options(repos = c(CRAN = "https://cran.rstudio.com/"))
+```
+
+```{r packages, eval=FALSE, include=FALSE}
+install.packages("stringr")
+install.packages("factoextra")
+install.packages("ordinal")
+install.packages("plsr")
+install.packages("gridExtra")  
+install.packages("ggplot2")
+```
+
+```{r librairies, include=FALSE}
+library(readr)
+library(corrplot)
+library (ggplot2)
+library (ggcorrplot)
+library(FactoMineR)
+library(factoextra)
+library(dplyr)
+library(tidyr)
+library (pls)
+library(stringr)
+library(dendextend)   # dendogramme
+library(MASS)    # pour la regresson ordinale
+library(ordinal)
+library(pheatmap) # heatmap avec clusters
+library(ggsci)  # pour les palette de couleurs graphe ggplot
+library(gridExtra)    # pour les graphiques en ligne/colonne
+```
+
+# Importation et exploration des données 
+
+```{r Importation données vin, echo=FALSE}
+vin <- read_csv("C:/Users/olivi/OneDrive - Université Paris-Dauphine/Documents ODD gram/Formation/Cours/Analyse de données/Projet ( à rendre 11024)/vin.csv")
+summary (vin)
+dim(vin)
+```
+
+
+
+
+
+
+
+```{r fréquence des notes}
+quality_freq <- as.data.frame(table(vin$quality))
+colnames(quality_freq) <- c("Quality", "Frequency")
+
+ggplot(quality_freq, aes(x = Quality, y = Frequency)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Nombre d'occurences",
+       x = "Qualité",
+       y = "Nombre de notes") +
+  theme_minimal()
+```
+
+
+Une grande majorité des vins sont notés 5 ou 6 et très peu reçoivent une valeur "extrême" (3 ou 8).
+
+Dans cette partie, nous ne nous intéressons qu'aux 11 premières variables, nous excluons donc la variable *quality* au sein d'un nouveau dataframe **vin_11**.  
+Heatmap pour afficher les corrélations entre les variables (l'argument *hclust* affiche les variables dans la matrice par cluster):
+```{r heatmap variables vin_11}
+vin_11 <- vin %>%               # nouveau dataframe sans la variable "quality"
+dplyr::select(1:11)
+
+corrplot::corrplot(cor(vin_11),
+         order = "hclust",
+         tl.cex=0.7,
+         diag =FALSE)
+```
+
+
+Les fortes corrélations (>0.5) concernent principalement les variables de même famille chimique (acidité, dioxyde de souffre).   
+Peu de groupes sont mis en évidence par l'argument *cluster* de *corplot*.
+
+# ACP
+
+```{r ACP}
+#standardisation dans vin_11_s
+vin_11_s <- scale(vin[, 1:11])
+acp_vin <- PCA(vin_11_s, scale.unit = FALSE, ncp = 11, graph=FALSE)  # montre que le scale unit est automatique
+```
+
+Afin d'éviter le biais dû à l'échelle des variables, nous standardisons ici les variables dans le dataframe **vin_11_s**. Chaque variable est donc transformée pour qu'elle ait une moyenne de 0 et un écart-type de 1.  
+Sans cela, celles avec des variances plus élevées pourraient excessivement dominer et fausser l'analyse. Les standardiser les rend en quelque sorte "compatibles".
+
+Notre code crée autant de composantes principales qu'il y a de variables, soit 11 composantes.  
+Voyons lesquelles retenir pour notre analyse.
+
+# Selection des composantes
+
+## Critère de Kaiser
+
+Le critère de Kaiser retient uniquement les composantes dont la valeur propre est supérieure à 1. Autrement dit, selon ce critère, une composante, pour être retenue, doit expliquer davantage de variance qu'une variable d'origine standardisée (qui a une variance de 1).
+
+```{r critère de Kaiser}
+# Extraire les valeurs propres de l'ACP
+valeus_propres <- acp_vin$eig[, 1]  # la première colonne contient les valeurs propres
+print(valeus_propres)
+# conserver les composantes avec des valeurs propres >= 1
+kaiser <- sum(valeus_propres >= 1)
+
+cat("Composantes principales à retenir selon le critère de Kaiser :", kaiser, "\n")
+```
+4 composantes sont retenues. 
+
+## Comparaison avec la variance moyenne
+
+Cette méthode retient uniquement les composantes qui expliquent plus que la moyenne de la variabilité totale du jeu de données.  
+Alors que le critère de Kaiser fixe un seuil strict (valeur propre > 1), l'approche basée sur la moyenne permet une évaluation plus fine. Ainsi, une composante peut être retenue même si sa valeur propre est inférieure à 1.
+
+```{r séléction graphique, variance moyenne}
+# calcul de la variance moyenne
+p<- 11
+val_propres <- acp_vin$eig %>% 
+  as.data.frame() %>% 
+  rename_all(.funs = function(x) str_replace_all(x, " ", "_")) %>% 
+  mutate(comp = 1:p)
+moy_val_propres <- mean(val_propres$eigenvalue)
+
+# affichage de la part de la variance expliquée par composante + variance moyenne
+fviz_screeplot(acp_vin, addlabels = TRUE, ylim = c(0, 40)) +
+  geom_hline(yintercept = moy_val_propres*100 / p, linetype = 1, color = "red") +
+  labs(title = "Part de la variance expliquée par composante et variance moyenne")
+```
+
+
+Ici, les 4 premières composantes valident le critère, la 5e se situant à la limite.
+
+## Variance Expliquée Cumulée
+
+Une autre méthode consiste à définir un seuil (par exemple, 80% ou 90%) de variance cumulée par rapport à la variance totale.
+```{r critère fixe 80 et 90 %, eval=FALSE, include=FALSE}
+# Calculer la variance expliquée par chaque composante principale
+explained_variance <- acp_vin$eig[, 2]  
+cumulative_explained_variance <- cumsum(explained_variance)
+
+variance_data <- data.frame(
+  Composantes = 1:length(cumulative_explained_variance),
+  VarianceCumulée = cumulative_explained_variance)
+
+# Tracer le graphique de la variance expliquée cumulée
+crit_80_90 <- ggplot(variance_data, aes(x = Composantes, y = VarianceCumulée)) +
+  geom_line(color = "blue") +
+  geom_point(color = "blue") +
+  geom_hline(yintercept = 90, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = 80, linetype = "dashed", color = "green") +
+  labs(
+    title = "Variance expliquée cumulée",
+    x = "Nombre de Composantes Principales",
+    y = "Variance Expliquée Cumulée (%)",
+    subtitle = "Ligne rouge représentant 90% - Ligne verte 80%") +
+  theme_minimal()
+
+crit_80_90
+```
+
+
+Au seuil de 80%, 4 composantes sont assurément retenues; la 5e se situe à la limite de notre seuil et peut être retenue ou écartée.  
+Au seuil de 90%, 6 composantes sont retenues.
+
+Conclusion: Chaque méthode a ses avantages et ses inconvénients. Le critère de Kaiser est simple mais peut être restrictif.  
+La comparaison avec la moyenne des valeurs propres est plus flexible mais peut être moins intuitive.  
+L'approche basée sur la variance expliquée cumulée est visuellement informative et permet d'adapter le seuil selon les besoins spécifiques de l'analyse.    
+
+On voit que ces différentes méthodes arrivent dans notre cas à des résultats similaires.
+
+# Visualisation des variables
+
+## Axes 1 et 2
+
+```{r graphique var axe 1 et 2}
+acp_var_12 <- fviz_pca_var(acp_vin, 
+             axes = c(1,2),
+             repel = TRUE,                     
+             labelsize = 5,                   
+             col.var = "blue")   
+acp_var_12
+```
+
+
+La dimension 1 (28.7% de la variance totale) sépare les variables principalement en fonction de l'acidité: à droite *fixed acid* et *citric acid*, à gauche *PH*. (Un fort PH correspond à un vin de nature "basique", les vins de nature acide ont un PH plus faible, que ces variables soient anti-corrélées est donc logique.)  
+
+La dimension 2 (17.1% de la variance totale) oppose principalement les variables en fonction du taux de *total sulfur dioxide* et *free sulfur dioxide* d'un côté, et du pourcentage d'alcool de l'autre.    
+Le dioxyde de souffre est en général lié à la protection et à la conservation du vin (il améliore la protection contre l'oxydation et les bactéries). Un vin avec un haut niveau d'alcool pourrait nécessiter moins de SO₂ pour atteindre une stabilité acceptable.
+
+## Axes 3 et 4
+
+```{r graphique var axe 3 et 4}
+acp_var_34 <- fviz_pca_var(acp_vin, 
+             axes = c(3,4),
+             repel = TRUE,                     
+             labelsize = 5,                   
+             col.var = "blue")   
+acp_var_34
+```
+
+
+Les variables qui s'opposent le plus selon la dimension 3 (14.3% de la variance totale) sont le dioxyde de souffre et l’alcool d'un côté, et la *volatile acidity* de l'autre. Ces trois variables sont les seules dont les projections sur l'axe des abscisses sont supérieures à 0.5 (leur cosinus). 
+
+La dimension 4 (11% de la variance totale) est elle dominée par les variables *chlorides* et *sulphates*, celles-ci participant dans le même sens à cette dimension. La variable *chlorides* a le plus grand sinus (environ 0.7) et nous pouvons noter qu'elle est presque neutre sur la dimension 3.  
+
+Notons également que la variable *PH*, déterminante dans la dimension 1, est ici neutre dans les dimensions 3 et 4 (ainsi que dans la 2).
+
+## Axes 5 et 6
+
+Même si nos critères ont tendance à ne retenir que 4 dimensions, observons les dimensions 5 et 6 et voyons si elles peuvent aider à l'analyse de notre jeu de données:
+```{r graphique var axes 3 et 4}
+acp_var_56 <- fviz_pca_var(acp_vin, 
+             axes = c(5,6),
+             repel = TRUE,                     
+             labelsize = 5,                   
+             col.var = "blue")  
+acp_var_56
+```
+
+
+Seule la variable *residual sugar* possède une projection sur les axes assez importante avec un cosinus d’environ 0.7 (donc sur l'axe des abscisses) dans la dimension 5 (qui représente 8.7% de la variance totale).
+
+La dimension 6 (6% de la variance totale) oppose principalement 2 groupes (*volatile acidity*, *alcohol* et *chlorides* d'une part et *PH*, *density* et *sulphates* de l'autre).  
+L'interprétation est rendue ici difficile au vu de "l’éparpillement" des variables qui construisent cette dimension. Mais cette interprétation n'est pas des plus décisive étant donné le niveau relativement faible de la variance expliquée par la dimension 6.
+
+# Contribution des différentes variables dans les 4 premières composantes
+
+```{r contribution var dans composantes via graphique}
+plot1 <- fviz_contrib(acp_vin, choice = "var", axes = 1)
+plot2 <- fviz_contrib(acp_vin, choice = "var", axes = 2)
+plot3 <- fviz_contrib(acp_vin, choice = "var", axes = 3)
+plot4 <- fviz_contrib(acp_vin, choice = "var", axes = 4)
+plot5 <- fviz_contrib(acp_vin, choice = "var", axes = 5)
+plot6 <- fviz_contrib(acp_vin, choice = "var", axes = 6)
+
+grid.arrange(plot1, plot2, plot3, plot4, plot5, plot6, ncol = 3, nrow = 2)
+```
+
+
+Cette représentation permet de visualiser, cette fois-ci, une dimension à la fois, la contribution des variables aux différentes dimensions.  
+Elle a l'avantage d'être très lisible mais ne permet pas de détecter les interactions entre les dimensions -contrairement au cercle des corrélations-, ni les relations des variables au sein de la dimension.
+
+# Visualisation des individus
+
+## Axes 1 et 2
+```{r graphe individus ACP axes 1 et 2}
+fviz_pca_ind(acp_vin, 
+             axes = c(1,2),
+             label = "none",
+             col.ind = "blue") 
+```
+
+
+Nous n'affichons pas les *labels*, les vins étant ici numérotés et non nommés: cela n'apporterait pas d'informations supplémentaires.  
+Notons une forte dispersion des observations selon les dimensions 1 et 2.  
+Nous pouvons simplement remarquer une densité plus forte à gauche de l'axe des ordonnées (soit selon la dimension 1) et une répartition plus étalée à droite de cet axe.  
+Aucun groupe ne se détache réellement mais nous pouvons noter la présence de quelques *outliers* surtout dans le cadran 1 (en haut à droite ou cadran nord-est). Ces individus sont donc très "forts" dans les 2 premières dimensions et contribuent fortement à la construction de ces mêmes dimensions. On peut donc s'attendre à ce que ces individus aient un faible PH et un taux important en dioxyde de souffre.
+
+## Axes 3 et 4
+
+```{r graphe individus ACP axe 3 et 4}
+fviz_pca_ind(acp_vin, 
+             axes = c(3,4),
+             label = "none",
+             col.ind = "blue") 
+```
+
+
+Les individus sont très étalés selon la dimension 1, aucun groupe n’apparaît clairement et nous observons au contraire une répartition assez homogène et symétrique autour de zéro.   
+Cependant, quelques outliers, surtout à droite, indiquent que certains vins sont fortement associés à cette dimension et peuvent être considérés comme de forts contributeurs à la composante.  
+On peut s'attendre à ce que ces individus soient "forts" en dioxyde de souffre et alcool.  
+
+La dimension 4 est au contraire très "compressée", la plupart des individus sont rassemblés autour de sinus 0.
+Une vingtaine de forts contributeurs se détachent et sont plus fortement associés à cette dimension, sans toutefois former un groupe homogène. On peut s'attendre à ce que ces individus soient "forts" en *chlorides* et *sulphates*, et "faibles" en *residual sugar*. 
+
+## Axes 5 et 6
+
+```{r graphe individus ACP axe 5 et 6}
+fviz_pca_ind(acp_vin, 
+             axes = c(5,6),
+             label = "none",
+             col.ind = "blue") 
+```
+
+
+Gardons à l'esprit que ces 2 dimensions sont moins déterminantes.  
+Les individus sont essentiellement rassemblés autour de zéro, et la densité diminue progressivement en s'en éloignant.
+3 *outliers* sont fortement associés à la direction positive de la dimension 1 (acidité).
+
+# Les variables chimiques expliquent-elles la qualité ?
+
+Regardons maintenant les corrélations en intégrant la varible cible *quality*:
+```{r heatmap variables vin}
+ggcorrplot(cor(vin),
+           method = "circle",
+           lab_size = 3,
+           lab = TRUE,
+           show.diag=FALSE,
+           tl.cex = 9)
+```
+
+La note de qualité est surtout corrélée positivement avec les variables *alcohol* (0.48), *volatile acidity* (0.41) et, dans une moindre mesure, *sulphates* et *citric acid* (respectivement 0.26 et 0.24).
+
+## Régression linéaire sur les composantes
+
+Une méthode consiste à pratiquer une simple régression linéaire sur les composantes:
+```{r regression sur ACP}
+coord_acp <- acp_vin$ind$coord        # coordonnées des composantes principales
+vin_reg_lin <- data.frame(quality = vin$quality, coord_acp)  # nouveau dataframe
+modele <- lm(quality ~ ., data = vin_reg_lin)    # régression
+summary(modele)
+```
+Beaucoup de composantes semblent avoir une influence significative sur la note du vin. Les plus gros coefficients sont dans l'ordre décroissant: les dimensions 3,2,9 et 10. Notons que la dimension 10 est moins significative mais sa p-valeur reste cependant acceptable (inférieure à 0.05).  
+Notre R^2 est relativement faible. Le modèle semble peu adapté.  
+
+Une régression ordinale est sans doute plus adaptée ici, la variable *quality* étant une note (valeur entière ordonnée) et non une variable continue.
+
+## Régression ordinale sur les composantes principales
+
+```{r régression ordinale sur ACP}
+df_vin_reg_ord <- vin_reg_lin
+df_vin_reg_ord$quality <- factor(vin_reg_lin$quality, ordered = TRUE)  # dataframe pour régression ordinale
+modele_ord <- clm(quality ~ ., data = df_vin_reg_ord)
+summary(modele_ord)
+```
+Nous ne poussons pas plus avant l'étude de ces modèles, ce n'est pas l'objet ici. Notons néanmoins l’intérêt de faire des régressions en utilisant les composantes de l'ACP, ces composantes étant indépendantes entre elles.
+
+## Cercle des corrélations avec variable d'intêret
+
+```{r graphe individus avec variable dépendante axe 1 et 2}
+quality_f <- as.factor(vin$quality)  # dataframe de la colonne quality en facteur
+
+acp_vin_12 <-  fviz_pca_ind(acp_vin,
+             axes=c(1,2),
+             repel = TRUE,
+             geom.ind = "point",
+             col.ind = quality_f,
+             palette = "ucscgb",
+             pointshape = 16, 
+             pointsize = 2,   
+             legend.title = "Quality",
+             title = "Individus ACP - Dimensions 1 et 2")
+acp_vin_12 
+```
+
+
+Gardons à l'esprit que la grande majorité des vins sont notés 5 ou 6.   
+Première remarque: la dimension 1 explique assez mal la qualité des vins.  
+Par contre, la dimension 2 explique mieux notre variable cible. Le "pattern" qui apparaît est que les notes tendent à augmenter lorsque l'on se déplace vers les valeurs négatives de la dimension 2.  
+Les vins les mieux notés sont donc ceux qui ont globalement le plus haut taux d'alcool et le moins de dioxyde de souffre.
+
+```{r graphe individus avec variable dépendante axe 3 et4}
+acp_vin_34 <- fviz_pca_ind(acp_vin,
+             axes=c(3,4),
+             repel = TRUE,
+             geom.ind = "point",
+             col.ind = quality_f,
+             palette = "ucscgb",
+             pointshape = 16, 
+             pointsize = 2,   
+             legend.title = "Quality",
+             title = "Individus ACP - Dimensions 3 et 4")
+acp_vin_34
+```
+
+
+On observe que les vins de meilleure qualité ont tendance à être plus vers la droite. La dimension 3 fait donc bien apparaître une relation avec la note donnée au vin. Notons les deux "outliers" à droite, qui sont des vins notés 7.      
+Par contre, une interprétation de ce phénomène n'est pas aisée (du moins sans connaissance solide en chimie), la composante 3 n'ayant pas de variables véritablement dominantes dans sa composition.      
+ 
+La dimension 4 ne fait pas apparaître de relation claire avec la qualité des vins.
+
+```{r graphe individus avec variable dépendante axe 5 et 6}
+acp_vin_56 <- fviz_pca_ind(acp_vin,
+             axes=c(5,6),
+             repel = TRUE,
+             geom.ind = "point",
+             col.ind = quality_f,
+             palette = "ucscgb",
+             pointshape = 16, 
+             pointsize = 2,   
+             legend.title = "Quality",
+             title = "Individus ACP - Dimensions 5 et 6")
+acp_vin_56
+```
+
+
+La composante 5 est peu explicative, même si on remarque que les vins mieux notés ont tendance à s’étaler plus vers la droite.  
+La dimension 6 ne permet pas d'expliquer la note.
+
+Les dimensions les plus explicatives sont donc la 2 et la 3, nous pouvons les combiner au sein d'un même graphique:
+```{r graphe individus avec variable dépendante axe 2 et 3}
+acp_vin_23 <- fviz_pca_ind(acp_vin,
+             axes=c(2,3),
+             repel = TRUE,
+             geom.ind = "point",
+             col.ind = quality_f,
+             palette = "ucscgb",
+             pointshape = 16, 
+             pointsize = 2,   
+             legend.title = "Quality",
+             title = "Individus ACP - Dimensions 2 et 3")
+acp_vin_23
+```
+
+
+Le résultat est le meilleur obtenu jusque-là. Une classification en fonction de la qualité apparaît ici nettement.
+
+### PLS
+
+Afin de savoir si les variables chimiques expliquent bien la qualité du vin, la méthode Partial Least Square semble bien adaptée.  
+En plus de maximiser la quantité de variance au sein des variables indépendantes comme le fait l'ACP, elle maximise également la variance qui explique la variable cible (la qualité du vin, ici).
+
+```{r pls sur dataframe}
+vin_12_s <- as.data.frame(vin_11_s)   
+vin_12_s$quality <- vin$quality
+
+set.seed(100)  
+pls_model <- plsr(quality ~ ., data = vin_12_s, scale= FALSE)
+summary(pls_model)
+```
+
+
+La première composante explique 17.18% de la variance de X (les variables de nature chimique) et 37.95% de la variance de la variable cible.  
+Nous observons que la première composante explique environ 10% de moins la variance de X que ne le fait la première dimension de l'ACP (respectivement 17.18% contre 28.7%), ce qui peut s'expliquer par le fait que les composantes en PLS représentent un compromis entre la variance des variables explicatives et celle de la qualité, par construction. 
+
+Nous pouvons observer graphiquement cette différence entre la variance expliquée par les composantes ACP et les composantes PLS:
+```{r Comparaison graphique variance expliquée ACP et PLS}
+val_propres %>% mutate(pls = cumsum(pls_model$Xvar/pls_model$Xtotvar),
+                       acp = cumsum(eigenvalue / p)) %>% 
+  dplyr::select(comp, pls, acp) %>% 
+  gather(key ="type", value ="y",-comp) %>% 
+ggplot() +
+  aes(x = comp, y =y, color =type) +
+  geom_point() +
+  geom_line() +
+  labs(x = "Composante (j)", y = "Proportion d'information",
+       title = "Inertie cumulée des composantes principales")
+```
+
+
+Le graphique confirme bien la moindre performance des composantes PLS pour expliquer uniquement les variables indépendantes (sauf évidemment quand toutes les composantes sont présentes).  
+La différence est particulièrement importante pour la première composante, celle qui justement explique le mieux la variable cible.
+
+```{r Minimiser erreur creoss validation}
+pls_model_cv <- plsr(quality ~ ., data = vin_12_s, scale= FALSE, validation ="CV")
+ncomp.onesigma <- selectNcomp(pls_model_cv, method = "onesigma", plot = TRUE)
+```
+
+
+Par validation croisée et en utilisant le critère d'une *standard error* de distance maximale par rapport à l'erreur minimale (l'erreur minimale est atteinte en comp.5), c'est, sans surprise, uniquement la première variable qui est sélectionnée.
+
+Comparons les variables de la première composante PLS et les trois premières composantes ACP:
+```{r barplot PLS vs ACP}
+loadings_pls <- loadings(pls_model) # Extraire les contributions des variables
+loadings_dim1 <- abs(loadings_pls[, 1])  # Prendre les valeurs absolues des contributions
+loadings_df <- data.frame(Variables = rownames(loadings_pls), Contribution = loadings_dim1)
+
+dim_pls <- ggplot(loadings_df, aes(x = reorder(Variables, -Contribution), y = Contribution)) +
+  geom_bar(stat = "identity") +
+  labs(title = "PLS - Dim 1",
+       x = "Variables", y = "Contribution (valeurs absolues)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+
+plot1 <- fviz_contrib(acp_vin, choice = "var", axes = 1) + ggtitle("ACP - Dim 1")
+plot2 <- fviz_contrib(acp_vin, choice = "var", axes = 2) + ggtitle("ACP - Dim 2")
+plot3 <- fviz_contrib(acp_vin, choice = "var", axes = 3) + ggtitle("ACP - Dim 3")
+
+#plot1 + plot2 + plot3
+grid.arrange(dim_pls, plot1,plot2, plot3, ncol = 2, nrow = 2)
+```
+
+Il est intéressant de noter que la dimension 1 en PLS ressemble à une combinaison des dimensions 2 et 3 de l'ACP, celles qui expliquaient le mieux la qualité des vins.  
+Nous voyons ici tout l'intérêt de l'approche PLS qui "capte" rapidement les variables les plus explicatives de la variable cible.
+
+Pour une compréhension plus fine, nous pouvons afficher le cercle des corrélations des deux premières dimensions:
+```{r cercel des corrélation PLS dim 1 et2}
+corrplot(pls_model, label = c(colnames(vin),"quality"), ploty=TRUE, comps=c(1,2))
+```
+
+
+Remarque: la variance expliquée de la composante 2 est indiquée supérieure à celle de la composante 1 car l'ordre de numérotion des variables dépend de l'explication de la variable cible et non de l'explication de la variance totale.
+
+Ce graphique montre une certaine ressemblance entre la composante 1 de la PLS et la composante 2 de l'ACP.   
+
+Comparons la répartition des individus selon les deux premières composantes de la PLS et de l'ACP:
+```{r include=FALSE}
+acp_vin_12 <- fviz_pca_ind(acp_vin,
+             axes=c(1,2),
+             repel = TRUE,
+             geom.ind = "point",
+             col.ind = quality_f,
+             palette = "ucscgb",
+             pointshape = 16, 
+             pointsize = 1,
+             legend.title = "Quality",
+             title = "ACP")
+
+acp_var_56
+```
+```{r graphe individus PLS 1 et 2}
+# Extraire les coordonées des deux premières composantes
+scores <- pls_model$scores[, 1:2]  # Prendre les deux premières composantes
+df_scores <- data.frame(scores, Quality = factor(vin$quality))
+
+# Créer le graphique en utilisant la palette "ucscgb"
+pls_vin_12 <- ggplot(df_scores, aes(x = Comp.1, y = Comp.2, color = Quality)) +
+  geom_point(size = 1) +
+  labs(title = "PLS",
+       x = "PLS Dimension 1",
+       y = "PLS Dimension 2") +
+  theme_minimal() +
+  scale_color_ucscgb()  
+
+grid.arrange(pls_vin_12, acp_vin_12, ncol = 2, nrow = 1)
+```
+
+
+Cette autre représentation arrive aux mêmes conclusions: la première dimension parvient assez bien à expliquer la qualité des vins, mieux encore que la dimension 2 de l'ACP.
+
+Affichons les dimensions suivantes:
+```{r graphe PLS 3&4 et 5&6}
+scores <- pls_model$scores[, 3:4]  # extraire les  composantes 3 et 4
+df_scores <- data.frame(scores, Quality = factor(vin$quality))
+
+pls_vin_34 <- ggplot(df_scores, aes(x = Comp.3, y = Comp.4, color = Quality)) +
+  geom_point(size = 1) +
+  labs(title = "PLS",
+       x = "PLS Dimension 3",
+       y = "PLS Dimension 4") +
+  theme_minimal() +
+  scale_color_ucscgb()  
+
+scores <- pls_model$scores[, 5:6]  # extraire les  composantes 3 et 4
+df_scores <- data.frame(scores, Quality = factor(vin$quality))
+
+pls_vin_56 <- ggplot(df_scores, aes(x = Comp.5, y = Comp.6, color = Quality)) +
+  geom_point(size = 1) +
+  labs(title = "PLS",
+       x = "PLS Dimension 5",
+       y = "PLS Dimension 6") +
+  theme_minimal() +
+  scale_color_ucscgb()  
+
+grid.arrange(pls_vin_34, pls_vin_56, ncol = 2, nrow = 1)
+```
+
+
+Nous passons rapidement sur les autres dimensions représentées ici, elles ne parviennent à expliquer correctement la qualité (à relier à la faible variance expliquée de la variable cible par ces composantes).
+
+# Heatmap avec 20 groupes de vins
+
+```{r ACH sur individus   long!!!!!!!!!!!!!!}
+hc <- hclust(dist(vin_11_s), method ="ward.D2")
+dend<- fviz_dend(hc, rect = TRUE, k=20)
+dend 
+```
+
+
+La méthode de *ward* minimise la variance totale au sein de chaque cluster.    
+Notons que les 20 clusters sont assez hétérogènes en nombre d'individus.    
+Le cluster le plus à gauche se distingue: les deux *fusions* qui le relient au cluster qui contient tous les individus sont situées très haut, ce qui indique une grande distance par rapport aux autres clusters.  
+
+Utilisons cet arbre dans un *heatmap*:
+```{r Heatmap}
+hc <- hclust(dist(vin_11_s), method ="ward.D2")
+vin_11_s_transposed <- t(vin_11_s)
+
+hm_all <- pheatmap(vin_11_s_transposed, 
+         cluster_cols = hc,  
+         show_rownames = TRUE,  
+         cutree_cols = 20,  
+         cutree_rows = 11,
+         breaks = seq(-10, 10, length.out = 50),  # Limiter l'échelle des couleurs
+         color = colorRampPalette(c("blue", "white", "red"))(50),  # Choisir une palette de couleurs
+         main = "Heatmap avec 20 clusters (lignes et colonnes inversées)")
+```
+
+
+Nous pouvons observer que la CAH parvient bien à créer des familles en fonction des variables, i.e.: à une forte proximité dans l'arbre, l'intensité par rapport à une variable donnée est le plus souvent aussi assez proche. 
+À l'opposé, pour les clusters isolés, donc reliés au sommet par peu de fusions (comme le premier à gauche, ici), le profil se différencie plus nettement des autres clusters.
+
+Cette représentation affiche **tous les individus** au sein de chaque cluster, elle permet notamment de vérifier que le cluster est homogène (en son sein) par rapport à une variable donnée.   
+Pour une lecture plus claire mais moins précise, nous pouvons n'afficher que le centre des clusters.
+
+```{r Heatmap avec le centre des classes}
+clusters <- cutree(hc, k = 20)
+# Calcule les centres des clusters
+centres_clusters <- aggregate(vin_11_s, by = list(cluster = clusters), FUN = mean)
+centres_clusters <- centres_clusters[,-1]  # Supprimer la colonne de cluster
+centres_clusters_transposed <- t(centres_clusters)
+
+# heatmap avec les centres des clusters
+pheatmap(centres_clusters_transposed, 
+         cutree_cols = 20,  
+         cluster_cols = FALSE,  
+         cutree_rows = 11,
+         show_rownames = TRUE,  
+         breaks = seq(-10, 10, length.out = 50),  
+         color = colorRampPalette(c("blue", "white", "red"))(50),
+         main = "Heatmap avec Centres des Clusters")
+```
+
+
+Il est ici plus facile de repérer les clusters qui sont "forts" dans certaines variables au prix d'une perte d'information (dimension des clusters et comportement des individus en leur sein).
+
+
+## méthode des k-means
+
+```{r heatmap k-means}
+set.seed(400)
+km <- kmeans(vin_11_s, centers = 20)
+
+cols <- colorRampPalette(c( "#0073c2","white","#efc000"))(100)
+pheatmap(t(km$centers), border_color = NA, 
+         color =colorRampPalette(c("blue", "white", "red"))(50),
+         clustering_method = "ward.D2",
+         breaks = seq(-10, 10, length.out = 50),  
+         cutree_rows = 11,
+         cutree_cols =20)
+```
+
+
+Cette approche permet d'associer les deux méthodes: d'abord les clusters sont calculés par la méthode des k-means, puis les centres des clusters sont hiérarchisés par CAH (méthode souvent utilisée quand il y a beaucoup d'individus).  
+L'avantage des k-means est que nous pouvons changer les points de départ en fixant des graines différentes et ne conserver que les résultats les plus pertinents.  
+
+Concernant notre jeu de données, les deux méthodes donnent des résultats assez proches.  
+Dans le cadre d'une étude chimique poussée, réalisée avec un expert, nous pourrions analyser quels individus composent tel cluster fort en telle variable, etc.  
+Par exemple: les vins composant le cluster "fort" en *residual sugar* sont-ils issus des mêmes terroirs ? Ou bien proviennent-ils des mêmes cépages ?
+
+Comparaison quantitative des deux méthodes:
+```{r comparaison des 2 méthodes}
+########## CAH
+
+clusters_hc <- cutree(hc, k = 20)
+# inertie intra-classe pour le clustering hiérarchique
+inertie_intra_hc <- sum(sapply(unique(clusters_hc), function(cluster) {
+  sum(dist(vin_11_s[clusters_hc == cluster, ])^2)
+}))
+
+# Calcul de l'inertie totale
+inertie_totale <- sum(dist(vin_11_s)^2)
+
+# Ratio pour le modèle hiérarchique
+ratio_hc <- (inertie_totale - inertie_intra_hc) / inertie_totale
+cat("Ratio Inertie inter / Inertie totale pour le clustering hiérarchique :", round(ratio_hc, 3), "\n")
+
+########## k-means
+
+# Calcul de l'inertie inter et intra pour le k-means
+inertie_inter_km <- km$betweenss
+inertie_intra_km <- km$tot.withinss
+
+# Ratio pour le modèle k-means
+ratio_km <- inertie_inter_km / (inertie_inter_km + inertie_intra_km)
+cat("Ratio Inertie inter / Inertie totale pour le clustering k-means :", round(ratio_km, 3), "\n")
+```
+
+
+Pour la CAH, un ratio de 0.976 indique que la majorité de la variance totale des données est expliquée par les différences entre les clusters. Cela signifie que les clusters sont très distincts les uns des autres, ce qui est un bon point. En d'autres termes, presque toutes les données sont bien séparées en groupes homogènes et cohérents.
+
+Pour les k-means, le ratio plus faible indique que seulement 66,1 % de la variance totale est expliquée par les différences entre les clusters. Cela signifie que les clusters formés par k-means sont moins distincts comparés à ceux formés par le clustering hiérarchique. Il y a donc plus de variabilité ici **au sein** des clusters.   
+Certains individus peuvent être plus proches d'autres clusters que de leur propre cluster (limite de la méthode k-means).  
+La méthode des k-means est réputée plus grossière que la CAH, elle est le plus souvent utilisée en pré-traitement lorsque l'on a affaire à un grand nombre d'individus, la méthode CAH étant très gourmande en ressources (le temps de traitement observé ici avec 10000 individus le confirme). 
+
+# Conclusion
+
+Pour aller plus loin, nous aurions pu utiliser un modèle de PLS ordinale comme le permet le package **plsRglm**, plutôt que le package *pls* qui a traité la qualité du vin comme une variable continue.
+
+Dans le cadre d'une analyse chimique poussée et maîtrisée, une ACP parcimonieuse aurait permis d'être plus sélectif et de mieux orienter l'analyse.  
+À l'inverse de l'ACP classique où toutes les composantes principales sont des combinaisons linéaires de toutes les variables, l'ACP parcimonieuse permet de sélectionner un sous-ensemble de variables pour chaque composante principale, ce qui permet de simplifier l'interprétation des résultats.
+
+
+
+
+
+
+
