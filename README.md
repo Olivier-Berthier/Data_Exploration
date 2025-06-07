@@ -1,4 +1,4 @@
-# Analyse de données
+# Analyse de données multivariées
 
 Ce projet s’inscrit dans le cadre de mon master en Data Science et consiste en une analyse approfondie d’un jeu de données regroupant des caractéristiques chimiques de différents vins, associées à des notes de qualité. L’objectif est de mettre en œuvre des méthodes d’exploration, de réduction de dimensionnalité et de clustering afin de mieux comprendre la structure et les patterns présents dans les données.
 
