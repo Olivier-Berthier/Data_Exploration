@@ -13,7 +13,7 @@ Un heatmap combiné à l’arbre hiérarchique permet de visualiser les regroupe
 Ce projet met en avant l’usage d’outils statistiques avancés pour l’exploration, la visualisation et l’interprétation de données multivariées, appliqués à une problématique concrète d’œnologie. Le code, reproductible sous R, illustre chaque étape, des premiers traitements au rendu graphique des résultats.
 
 
-# Analyse de données multivariées, deuxièle partie
+# Analyse de données multivariées, deuxième partie
 
 Dans la continuité du projet précédent sur les vins, cette seconde étude se concentre sur un jeu de données génétiques recueilli auprès de 50 patientes atteintes d’un cancer de l’ovaire. L’objectif vise à exploiter des techniques d’analyse multivariée pour dégager des profils génétiques distincts susceptibles d’avoir une valeur clinique ou biologique.
 
